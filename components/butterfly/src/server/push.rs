@@ -3,15 +3,6 @@
 //! This is the thread for distributing rumors to members. It distributes to `FANOUT` members, no
 //! more often than `Timing::GOSSIP_PERIOD_DEFAULT_MS`.
 
-use std::{thread,
-          time::Duration};
-
-use habitat_core::util::ToI64;
-use prometheus::{IntCounterVec,
-                 IntGaugeVec};
-use time::SteadyTime;
-use zmq;
-
 use crate::{member::{Member,
                      Membership},
             rumor::{RumorEnvelope,
@@ -22,6 +13,13 @@ use crate::{member::{Member,
                      Server},
             trace::TraceKind,
             ZMQ_CONTEXT};
+use habitat_core::util::ToI64;
+use prometheus::{IntCounterVec,
+                 IntGaugeVec};
+use std::{thread,
+          time::Duration};
+use time::SteadyTime;
+use zmq;
 
 const FANOUT: usize = 5;
 
@@ -74,7 +72,6 @@ fn run_loop(server: &Server, timing: &Timing) -> ! {
             for member in check_list.drain(0..drain_length) {
                 if server.is_member_blocked(&member.id) {
                     debug!("Not sending rumors to {} - it is blocked", member.id);
-
                     continue;
                 }
                 // Unlike the SWIM mechanism, we don't actually want to send gossip traffic to
@@ -83,7 +80,7 @@ fn run_loop(server: &Server, timing: &Timing) -> ! {
                 if server.member_list.pingable_mlr(&member)
                    && !server.member_list.persistent_and_confirmed_mlr(&member)
                 {
-                    let rumors = server.rumor_heat.currently_hot_rumors(&member.id);
+                    let rumors = server.keys_for_live_rumors();
                     if !rumors.is_empty() {
                         let sc = server.clone();
                         let guard = match thread::Builder::new().name(String::from("push-worker"))

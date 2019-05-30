@@ -2,20 +2,6 @@
 //!
 //! This module handles the implementation of the swim probe protocol.
 
-use std::{fmt,
-          net::{SocketAddr,
-                UdpSocket},
-          sync::mpsc,
-          thread,
-          time::Duration};
-
-use habitat_core::util::ToI64;
-use prometheus::{HistogramTimer,
-                 HistogramVec,
-                 IntCounterVec,
-                 IntGaugeVec};
-use time::SteadyTime;
-
 use super::AckReceiver;
 use crate::{member::{Health,
                      Member},
@@ -28,6 +14,18 @@ use crate::{member::{Health,
                    PingReq,
                    Swim},
             trace::TraceKind};
+use habitat_core::util::ToI64;
+use prometheus::{HistogramTimer,
+                 HistogramVec,
+                 IntCounterVec,
+                 IntGaugeVec};
+use std::{fmt,
+          net::{SocketAddr,
+                UdpSocket},
+          sync::mpsc,
+          thread,
+          time::Duration};
+use time::SteadyTime;
 
 /// How long to sleep between calls to `recv`.
 const PING_RECV_QUEUE_EMPTY_SLEEP_MS: u64 = 10;
@@ -302,11 +300,8 @@ pub fn populate_membership_rumors_mlr(server: &Server,
         }
     }
 
-    // NOTE: the way this is currently implemented, this is grabbing
-    // the 5 coolest (but still warm!) Member rumors.
     let rumors: Vec<RumorKey> = server
-        .rumor_heat
-        .currently_hot_rumors(&target.id)
+        .keys_for_live_rumors()
         .into_iter()
         .filter(|ref r| r.kind == RumorType::Member)
         .take(5) // TODO (CM): magic number!
@@ -316,12 +311,6 @@ pub fn populate_membership_rumors_mlr(server: &Server,
         if let Some(member) = server.member_list.membership_for_mlr(&rkey.key()) {
             swim.membership.push(member);
         }
-    }
-    // We don't want to update the heat for rumors that we know we are sending to a target that is
-    // confirmed dead; the odds are, they won't receive them. Lets spam them a little harder with
-    // rumors.
-    if !server.member_list.persistent_and_confirmed_mlr(target) {
-        server.rumor_heat.cool_rumors(&target.id, &rumors);
     }
 
     swim

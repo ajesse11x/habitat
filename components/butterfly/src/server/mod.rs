@@ -27,15 +27,13 @@ use crate::{error::{Error,
                     election::{Election,
                                ElectionRumor,
                                ElectionUpdate},
-                    heat::RumorHeat,
                     service::Service,
                     service_config::ServiceConfig,
                     service_file::ServiceFile,
                     Rumor,
                     RumorKey,
                     RumorStore,
-                    RumorStoreProxy,
-                    RumorType},
+                    RumorStoreProxy},
             swim::Ack,
             trace::{Trace,
                     TraceKind}};
@@ -234,7 +232,6 @@ pub struct Server {
     pub member:               Arc<RwLock<Myself>>,
     pub member_list:          Arc<MemberList>,
     ring_key:                 Arc<Option<SymKey>>,
-    rumor_heat:               RumorHeat,
     pub service_store:        RumorStore<Service>,
     pub service_config_store: RumorStore<ServiceConfig>,
     pub service_file_store:   RumorStore<ServiceFile>,
@@ -264,7 +261,6 @@ impl Clone for Server {
                  member:               self.member.clone(),
                  member_list:          self.member_list.clone(),
                  ring_key:             self.ring_key.clone(),
-                 rumor_heat:           self.rumor_heat.clone(),
                  service_store:        self.service_store.clone(),
                  service_config_store: self.service_config_store.clone(),
                  service_file_store:   self.service_file_store.clone(),
@@ -328,7 +324,6 @@ impl Server {
                             member:               Arc::new(RwLock::new(myself)),
                             member_list:          Arc::new(MemberList::new()),
                             ring_key:             Arc::new(ring_key),
-                            rumor_heat:           RumorHeat::default(),
                             service_store:        RumorStore::default(),
                             service_config_store: RumorStore::default(),
                             service_file_store:   RumorStore::default(),
@@ -544,7 +539,6 @@ impl Server {
     /// * `MemberList::entries` (write) This method must not be called while any MemberList::entries
     ///   lock is held.
     pub fn insert_member_mlw(&self, member: Member, health: Health) {
-        let rk: RumorKey = RumorKey::from(&member);
         // NOTE: This sucks so much right here. Check out how we allocate no matter what, because
         // of just how the logic goes. The value of the trace is really high, though, so we deal
         // with it as best we can, with our head held high.
@@ -557,16 +551,6 @@ impl Server {
                       member_id,
                       trace_incarnation,
                       trace_health);
-
-            // Purge "heat" information for a member that's
-            // gone. Purging doesn't remove Member rumor information,
-            // though, since that's how we let others know this member
-            // has departed; that's why we subsequently start a "hot"
-            // rumor.
-            if health == Health::Departed {
-                self.rumor_heat.purge(&member_id);
-            }
-            self.rumor_heat.start_hot_rumor(rk);
         }
     }
 
@@ -592,15 +576,6 @@ impl Server {
                           me.incarnation(),
                           Health::Departed);
             }
-            // We need to mark this as "hot" in order to propagate it.
-            //
-            // TODO (CM): This exact code is present numerous places;
-            // factor it out to facilitate further code consolidation.
-
-            // NOT calling RumorHeat::purge here because we'll be
-            // shutting down soon anyway.
-            self.rumor_heat
-                .start_hot_rumor(RumorKey::new(RumorType::Member, &self.member_id, ""));
 
             let check_list = self.member_list.check_list_mlr(&self.member_id);
 
@@ -620,13 +595,24 @@ impl Server {
         }
     }
 
+    /// Gather and return RumorKeys for all our rumors
+    pub fn keys_for_live_rumors(&self) -> Vec<RumorKey> {
+        let mut keys = self.service_store.rumor_keys();
+        keys.append(&mut self.service_config_store.rumor_keys());
+        keys.append(&mut self.service_file_store.rumor_keys());
+        keys.append(&mut self.election_store.rumor_keys());
+        keys.append(&mut self.update_store.rumor_keys());
+        keys.append(&mut self.departure_store.rumor_keys());
+        keys.append(&mut self.member_list.rumor_keys());
+        keys
+    }
+
     /// Given a membership record and some health, insert it into the Member List.
     ///
     /// # Locking
     /// * `MemberList::entries` (write) This method must not be called while any MemberList::entries
     ///   lock is held.
     fn insert_member_from_rumor_mlw(&self, member: Member, mut health: Health) {
-        let rk: RumorKey = RumorKey::from(&member);
         if member.id == self.member_id() && health != Health::Alive {
             let mut me = self.member.write().expect("Member lock is poisoned");
             if member.incarnation >= me.incarnation() {
@@ -647,11 +633,6 @@ impl Server {
                       member_id,
                       trace_incarnation,
                       trace_health);
-
-            if member_id != self.member_id() && health == Health::Departed {
-                self.rumor_heat.purge(&member_id);
-            }
-            self.rumor_heat.start_hot_rumor(rk);
         }
     }
 
@@ -671,17 +652,14 @@ impl Server {
     /// * `MemberList::entries` (write) This method must not be called while any MemberList::entries
     ///   lock is held.
     pub fn insert_service_mlw(&self, service: Service) {
-        Self::insert_service_impl(service,
-                                  &self.service_store,
-                                  &self.member_list,
-                                  &self.rumor_heat,
-                                  |k| self.check_quorum_mlr(k))
+        Self::insert_service_impl(service, &self.service_store, &self.member_list, |k| {
+            self.check_quorum_mlr(k)
+        })
     }
 
     fn insert_service_impl(service: Service,
                            service_store: &RumorStore<Service>,
                            member_list: &MemberList,
-                           rumor_heat: &RumorHeat,
                            check_quorum: impl Fn(&str) -> bool) {
         let rk = RumorKey::from(&service);
         let RumorKey { key: service_group,
@@ -699,30 +677,19 @@ impl Server {
                                  })
                 {
                     member_list.set_departed_mlw(&member_id_to_depart);
-                    rumor_heat.purge(&member_id_to_depart);
-                    rumor_heat.start_hot_rumor(RumorKey::new(RumorType::Member,
-                                                             &member_id_to_depart,
-                                                             ""));
                 }
             }
-            rumor_heat.start_hot_rumor(rk);
         }
     }
 
     /// Insert a service config rumor into the service store.
     pub fn insert_service_config(&self, service_config: ServiceConfig) {
-        let rk = RumorKey::from(&service_config);
-        if self.service_config_store.insert(service_config) {
-            self.rumor_heat.start_hot_rumor(rk);
-        }
+        self.service_config_store.insert(service_config);
     }
 
     /// Insert a service file rumor into the service file store.
     pub fn insert_service_file(&self, service_file: ServiceFile) {
-        let rk = RumorKey::from(&service_file);
-        if self.service_file_store.insert(service_file) {
-            self.rumor_heat.start_hot_rumor(rk);
-        }
+        self.service_file_store.insert(service_file);
     }
 
     /// Insert a departure rumor into the departure store.
@@ -731,21 +698,13 @@ impl Server {
     /// * `MemberList::entries` (write) This method must not be called while any MemberList::entries
     ///   lock is held.
     pub fn insert_departure_mlw(&self, departure: Departure) {
-        let rk = RumorKey::from(&departure);
         if *self.member_id == departure.member_id {
             self.departed
                 .compare_and_swap(false, true, Ordering::Relaxed);
         }
 
         self.member_list.set_departed_mlw(&departure.member_id);
-
-        self.rumor_heat.purge(&departure.member_id);
-        self.rumor_heat
-            .start_hot_rumor(RumorKey::new(RumorType::Member, &departure.member_id, ""));
-
-        if self.departure_store.insert(departure) {
-            self.rumor_heat.start_hot_rumor(rk);
-        }
+        self.departure_store.insert(departure);
     }
 
     /// Get all the Member ID's who are present in a given service group, and eligible to vote
@@ -834,7 +793,6 @@ impl Server {
             warn!("start_election check_quorum failed: {:?}", e);
         }
         debug!("start_election: {:?}", e);
-        self.rumor_heat.start_hot_rumor(RumorKey::from(&e));
         self.election_store.insert(e);
     }
 
@@ -852,7 +810,6 @@ impl Server {
             warn!("start_election check_quorum failed: {:?}", e);
         }
         debug!("start_update_election: {:?}", e);
-        self.rumor_heat.start_hot_rumor(RumorKey::from(&e));
         self.update_store.insert(e);
     }
 
@@ -990,7 +947,6 @@ impl Server {
     ///   lock is held.
     pub fn insert_election_mlr(&self, mut election: Election) {
         debug!("insert_election: {:?}", election);
-        let rk = RumorKey::from(&election);
 
         // If this is an election for a service group we care about
         if self.service_store
@@ -1073,9 +1029,8 @@ impl Server {
                 }
             }
         }
-        if self.election_store.insert(election) {
-            self.rumor_heat.start_hot_rumor(rk);
-        }
+
+        self.election_store.insert(election);
     }
 
     /// # Locking
@@ -1083,7 +1038,6 @@ impl Server {
     ///   lock is held.
     pub fn insert_update_election_mlr(&self, mut election: ElectionUpdate) {
         debug!("insert_update_election: {:?}", election);
-        let rk = RumorKey::from(&election);
 
         // If this is an election for a service group we care about
         if self.service_store
@@ -1145,9 +1099,8 @@ impl Server {
                 }
             }
         }
-        if self.update_store.insert(election) {
-            self.rumor_heat.start_hot_rumor(rk);
-        }
+
+        self.update_store.insert(election);
     }
 
     fn generate_wire(&self, payload: Vec<u8>) -> Result<Vec<u8>> {
@@ -1425,12 +1378,10 @@ mod tests {
         let service = mock_service(&Member::default());
         let service_store = RumorStore::default();
         let member_list = MemberList::new();
-        let rumor_heat = RumorHeat::default();
 
         Server::insert_service_impl(service.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(false));
 
         assert!(service_store.contains(&service));
@@ -1444,7 +1395,6 @@ mod tests {
         let alive_member_service_rumor = mock_service(&alive_member);
         let service_store = RumorStore::default();
         let member_list = MemberList::new();
-        let rumor_heat = RumorHeat::default();
 
         member_list.insert_mlw(alive_member.clone(), Health::Alive);
         member_list.insert_mlw(confirmed_member.clone(), Health::Confirmed);
@@ -1452,7 +1402,6 @@ mod tests {
         Server::insert_service_impl(confirmed_member_service_rumor.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(false));
 
         assert_eq!(member_list.health_of_mlr(&confirmed_member),
@@ -1461,7 +1410,6 @@ mod tests {
         Server::insert_service_impl(alive_member_service_rumor.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(false));
 
         assert_eq!(member_list.health_of_mlr(&confirmed_member),
@@ -1476,7 +1424,6 @@ mod tests {
         let alive_member_service_rumor = mock_service(&alive_member);
         let service_store = RumorStore::default();
         let member_list = MemberList::new();
-        let rumor_heat = RumorHeat::default();
 
         member_list.insert_mlw(alive_member.clone(), Health::Alive);
         // This member will become confirmed later. If it's already Confirmed
@@ -1486,13 +1433,11 @@ mod tests {
         Server::insert_service_impl(alive_member_service_rumor.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(false));
 
         Server::insert_service_impl(confirmed_member_service_rumor.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(false));
 
         member_list.insert_mlw(confirmed_member.clone(), Health::Confirmed);
@@ -1502,7 +1447,6 @@ mod tests {
                                               ..alive_member_service_rumor },
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(false));
 
         assert_eq!(member_list.health_of_mlr(&confirmed_member),
@@ -1517,7 +1461,6 @@ mod tests {
         let alive_member_service_rumor = mock_service(&alive_member);
         let service_store = RumorStore::default();
         let member_list = MemberList::new();
-        let rumor_heat = RumorHeat::default();
 
         member_list.insert_mlw(alive_member.clone(), Health::Alive);
         member_list.insert_mlw(confirmed_member.clone(), Health::Confirmed);
@@ -1525,7 +1468,6 @@ mod tests {
         Server::insert_service_impl(confirmed_member_service_rumor.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(true));
 
         assert_eq!(member_list.health_of_mlr(&confirmed_member),
@@ -1534,7 +1476,6 @@ mod tests {
         Server::insert_service_impl(alive_member_service_rumor.clone(),
                                     &service_store,
                                     &member_list,
-                                    &rumor_heat,
                                     check_quorum_returns(true));
 
         assert_eq!(member_list.health_of_mlr(&confirmed_member),
