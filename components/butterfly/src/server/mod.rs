@@ -407,13 +407,15 @@ impl Server {
     /// # Locking
     /// * `MemberList::entries` (write) This method must not be called while any MemberList::entries
     ///   lock is held.
+    /// * `RumorStore::list` (read) This method must not be called while any RumorStore::list lock
+    ///   is held.
     ///
     /// # Errors
     ///
     /// * Returns `Error::CannotBind` if the socket cannot be bound
     /// * Returns `Error::SocketSetReadTimeout` if the socket read timeout cannot be set
     /// * Returns `Error::SocketSetWriteTimeout` if the socket write timeout cannot be set
-    pub fn start_mlw(&mut self, timing: &timing::Timing) -> Result<()> {
+    pub fn start_mlw_rsr(&mut self, timing: &timing::Timing) -> Result<()> {
         debug!("entering habitat_butterfly::server::Server::start");
         let (tx_outbound, rx_inbound) = channel();
         if let Some(ref path) = self.data_path {
@@ -422,7 +424,7 @@ impl Server {
             }
 
             let dat_path = path.join(format!("{}.rst", &self.member_id));
-            let mut file = DatFile::read_or_create_mlr(dat_path, &self)?;
+            let mut file = DatFile::read_or_create_mlr_rsr(dat_path, &self)?;
 
             match file.read_into_mlw(self) {
                 Ok(_) => {
@@ -1161,10 +1163,12 @@ impl Server {
     /// # Locking
     /// * `MemberList::entries` (read) This method must not be called while any MemberList::entries
     ///   lock is held.
-    pub fn persist_data_mlr(&self) {
+    /// * `RumorStore::list` (read) This method must not be called while any RumorStore::list lock
+    ///   is held.
+    pub fn persist_data_mlr_rsr(&self) {
         if let Some(ref dat_file_lock) = self.dat_file {
             let dat_file = dat_file_lock.lock().expect("DatFile lock poisoned");
-            if let Some(err) = dat_file.write_mlr(self).err() {
+            if let Some(err) = dat_file.write_mlr_rsr(self).err() {
                 error!("Error persisting rumors to disk, {}", err);
             } else {
                 info!("Rumors persisted to disk: {}", dat_file.path().display());
@@ -1203,7 +1207,7 @@ fn persist_loop(server: &Server) -> ! {
         habitat_common::sync::mark_thread_alive();
 
         let before_persist = Instant::now();
-        server.persist_data_mlr();
+        server.persist_data_mlr_rsr();
         let time_to_persist = before_persist.elapsed();
         trace!("persist_data took {:?}", time_to_persist);
         match min_loop_period.checked_sub(time_to_persist) {
@@ -1686,14 +1690,14 @@ mod tests {
         fn new_with_corrupt_rumor_file() {
             let tmpdir = TempDir::new().unwrap();
             let mut server = start_with_corrupt_rumor_file(&tmpdir);
-            server.start_mlw(&Timing::default())
+            server.start_mlw_rsr(&Timing::default())
                   .expect("Server failed to start");
         }
 
         #[test]
         fn start_listener() {
             let mut server = start_server();
-            server.start_mlw(&Timing::default())
+            server.start_mlw_rsr(&Timing::default())
                   .expect("Server failed to start");
         }
     }

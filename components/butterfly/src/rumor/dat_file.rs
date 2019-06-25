@@ -67,7 +67,9 @@ impl DatFile {
     /// # Locking
     /// * `MemberList::entries` (read) This method must not be called while any MemberList::entries
     ///   lock is held.
-    pub fn read_or_create_mlr(data_path: PathBuf, server: &Server) -> Result<Self> {
+    /// * `RumorStore::list` (read) This method must not be called while any RumorStore::list lock
+    ///   is held.
+    pub fn read_or_create_mlr_rsr(data_path: PathBuf, server: &Server) -> Result<Self> {
         let file = OpenOptions::new().create(true)
                                      .read(true)
                                      .write(true)
@@ -83,7 +85,7 @@ impl DatFile {
                                      reader };
 
         if size == 0 {
-            dat_file.write_mlr(server)?;
+            dat_file.write_mlr_rsr(server)?;
         }
 
         dat_file.read_header()?;
@@ -240,7 +242,9 @@ impl DatFile {
     /// # Locking
     /// * `MemberList::entries` (read) This method must not be called while any MemberList::entries
     ///   lock is held.
-    pub fn write_mlr(&self, server: &Server) -> Result<usize> {
+    /// * `RumorStore::list` (read) This method must not be called while any RumorStore::list lock
+    ///   is held.
+    pub fn write_mlr_rsr(&self, server: &Server) -> Result<usize> {
         let mut header = Header::default();
         let w =
             AtomicWriter::new(&self.path).map_err(|err| Error::DatFileIO(self.path.clone(), err))?;
@@ -254,23 +258,23 @@ impl DatFile {
              header.insert_member_offset(self.write_member_list_mlr(&mut writer,
                                                                     &server.member_list)?);
              header.insert_offset_for_rumor(Service::MESSAGE_ID,
-                                            self.write_rumor_store(&mut writer,
-                                                                   &server.service_store)?);
+                                            self.write_rumor_store_rsr(&mut writer,
+                                                                       &server.service_store)?);
              header.insert_offset_for_rumor(ServiceConfig::MESSAGE_ID,
-                                            self.write_rumor_store(&mut writer,
+                                            self.write_rumor_store_rsr(&mut writer,
                                                                    &server.service_config_store)?);
              header.insert_offset_for_rumor(ServiceFile::MESSAGE_ID,
-                                            self.write_rumor_store(&mut writer,
+                                            self.write_rumor_store_rsr(&mut writer,
                                                                    &server.service_file_store)?);
              header.insert_offset_for_rumor(Election::MESSAGE_ID,
-                                            self.write_rumor_store(&mut writer,
-                                                                   &server.election_store)?);
+                                            self.write_rumor_store_rsr(&mut writer,
+                                                                       &server.election_store)?);
              header.insert_offset_for_rumor(ElectionUpdate::MESSAGE_ID,
-                                            self.write_rumor_store(&mut writer,
-                                                                   &server.update_store)?);
+                                            self.write_rumor_store_rsr(&mut writer,
+                                                                       &server.update_store)?);
              header.insert_offset_for_rumor(Departure::MESSAGE_ID,
-                                            self.write_rumor_store(&mut writer,
-                                                                   &server.departure_store)?);
+                                            self.write_rumor_store_rsr(&mut writer,
+                                                                       &server.departure_store)?);
              writer.seek(SeekFrom::Start(1))?;
              self.write_header(&mut writer, &header)?;
              writer.flush()?;
@@ -325,15 +329,16 @@ impl DatFile {
         Ok(total)
     }
 
-    fn write_rumor_store<T, W>(&self, writer: &mut W, store: &RumorStore<T>) -> Result<u64>
+    /// # Locking
+    /// * `RumorStore::list` (read) This method must not be called while any RumorStore::list lock
+    ///   is held.
+    fn write_rumor_store_rsr<T, W>(&self, writer: &mut W, store: &RumorStore<T>) -> Result<u64>
         where T: Rumor,
               W: Write
     {
         let mut total = 0;
-        for member in store.list.read().values() {
-            for rumor in member.values() {
-                total += self.write_rumor(writer, rumor)?;
-            }
+        for rumor in store.lock_rsr().rumors() {
+            total += self.write_rumor(writer, rumor)?;
         }
         Ok(total)
     }
