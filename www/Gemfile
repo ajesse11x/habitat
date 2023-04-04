@@ -11,21 +11,21 @@ gem 'wdm', '>= 0.1.0' if Gem.win_platform?
 gem 'tzinfo-data', platforms: [:mswin, :mingw, :x64_mingw]
 
 # For better code snippets in markdown
-gem 'redcarpet'
+gem 'redcarpet', '>= 3.5.1'
 gem 'middleman-vegas'
 
 # Middleman Gems
-gem 'middleman', '>= 4.1'
+gem 'middleman', '>= 4.4.0'
 gem 'middleman-autoprefixer'
 gem 'middleman-livereload'
 gem 'middleman-s3_sync'
-gem 'middleman-sprockets', '>= 4.0.0.rc.1'
-gem 'middleman-blog', '>= 4.0'
+gem 'middleman-sprockets', '>= 4.1.1'
+gem 'middleman-blog', '>= 4.0.3'
 gem 'middleman-minify-html'
 gem 'mime-types'
 
 
-gem 'rubocop', require: false
+gem 'rubocop', '>= 0.49.0', require: false
 gem 'scss_lint', require: false
 gem 'checker', require: false
 
