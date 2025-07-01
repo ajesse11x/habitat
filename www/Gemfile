@@ -15,17 +15,17 @@ gem 'redcarpet'
 gem 'middleman-vegas'
 
 # Middleman Gems
-gem 'middleman', '>= 4.1'
-gem 'middleman-autoprefixer'
-gem 'middleman-livereload'
-gem 'middleman-s3_sync'
+gem 'middleman', '>= 4.4.0'
+gem 'middleman-autoprefixer', '>= 3.0.0'
+gem 'middleman-livereload', '>= 3.4.7'
+gem 'middleman-s3_sync', '>= 4.5.0'
 gem 'middleman-sprockets', '>= 4.0.0.rc.1'
-gem 'middleman-blog', '>= 4.0'
+gem 'middleman-blog', '>= 4.1.0'
 gem 'middleman-minify-html'
 gem 'mime-types'
 
 
-gem 'rubocop', require: false
+gem 'rubocop', '>= 0.29.0', require: false
 gem 'scss_lint', require: false
 gem 'checker', require: false
 
